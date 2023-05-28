@@ -11,7 +11,7 @@ This action only computes metadata and doesn't push git tags, publishes a packag
 
 ### GitHub Workflow
 
-You have to set up a step like this in your workflow (this assumes you've already [checked out](https://github.com/actions/checkout) your repo and [set up Node](https://github.com/actions/setup-node)):
+You have to set up a step like this in your workflow (this assumes you've already [checked out](https://github.com/actions/checkout) your repo):
 
 ```yml
 - id: version # This will be the reference for getting the outputs.
@@ -118,6 +118,63 @@ With step id `version` you'll find the outputs at `steps.version.outputs.OUTPUT_
   run: 'echo "Version has not changed"'
 ```
 
+## Support for repos without `package.json`
+
+If you want to use this action in a non-`node` project, you can use the `file` input in combination with the `extractor` or `regex` input to specify a different file to check for version changes.
+The `extractor` should point to an executable which outputs the version number to stdout given the file contents as input.
+Alternatively, you can use the `regex` input to specify a regex which will be used to extract the version number from the file contents.
+
+### `regex` example
+
+Let's assume you have a file `version.yml` in the root directory of your repo which contains the version number in the following format:
+
+```yml
+package:
+  version: 1.2.3
+```
+
+Then you could use the following configuration:
+
+```yml
+- name: Check if version has been updated
+  id: version
+  uses: Quantco/ui-actions/version-metadata@v1
+  with:
+    file: ./version.yml
+    regex: 'version: (.*)'
+```
+
+### `extractor` example
+
+If you have a more complex versioning scheme, you can write a small script which outputs the version number to stdout.
+
+Let's assume you have a file `version.py` which contains the version number in the following format:
+
+```py
+...
+version_info = (0, 2, 1)
+...
+```
+
+Then you could write the following script `read_version` that extracts `0.2.1` from the file contents:
+
+```bash
+#!/usr/bin/env bash
+
+# find the correct line, then get everything between the parentheses and replace ", " with "."
+echo $(cat $1 | grep "version_info =" | sed "s/^.*(\([^()]*\)).*$/\1/" | sed "s/, /./g")
+```
+
+You can then use this script in the action:
+
+```yml
+- name: Check if version has been updated
+  id: version
+  uses: Quantco/ui-actions/version-metadata@v1
+  with:
+    file: ./version.py
+    extractor: ./read_version
+```
 
 ## Examples
 

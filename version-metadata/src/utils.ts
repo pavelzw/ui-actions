@@ -1,3 +1,4 @@
+import { spawnSync } from 'child_process'
 import type { Context } from '@actions/github/lib/context'
 
 export type VersionDiffType = 'major' | 'minor' | 'patch' | 'pre-release'
@@ -262,7 +263,7 @@ const categorizeChangedFiles = (
   return { all, added, modified, removed, renamed }
 }
 
-const parseVersionFromFileContents = (
+const parseVersionFromFileContentsJSON = (
   fileContent: string,
   sha: string,
   gitUrl: string | null
@@ -284,6 +285,64 @@ const parseVersionFromFileContents = (
   }
 
   return { success: true, version: parsed.version }
+}
+
+const parseVersionFromFileContentsRegex = (
+  fileContent: string,
+  sha: string,
+  gitUrl: string | null,
+  versionRegex: string
+): { success: false; error: string } | { success: true; version: string } => {
+  const regex = new RegExp(versionRegex)
+  const match = fileContent.match(regex)
+  if (!match) {
+    return {
+      success: false,
+      error: `Failed to extract version from file contents (url: ${gitUrl}, sha: ${sha}, content: "${fileContent}")`
+    }
+  }
+  return { success: true, version: match[0] }
+}
+
+const parseVersionFromFileContentsExtractor = (
+  fileContent: string,
+  sha: string,
+  gitUrl: string | null,
+  versionExtractor: string
+): { success: false; error: string } | { success: true; version: string } => {
+  const child = spawnSync(versionExtractor, [], {
+    input: fileContent,
+    encoding: 'utf-8'
+  })
+  if (child.error) {
+    return {
+      success: false,
+      error: `Failed to execute version extractor (url: ${gitUrl}, sha: ${sha}, error: ${child.error})`
+    }
+  }
+  if (child.status !== 0) {
+    return {
+      success: false,
+      error: `Version extractor exited with non-zero status code (url: ${gitUrl}, sha: ${sha}, status: ${child.status}, stderr: ${child.stderr})`
+    }
+  }
+  return { success: true, version: child.stdout.trim() }
+}
+
+const parseVersionFromFileContents = (
+  fileContent: string,
+  sha: string,
+  gitUrl: string | null,
+  versionRegex: string | undefined,
+  versionExtractor: string | undefined
+): { success: false; error: string } | { success: true; version: string } => {
+  if (versionRegex) {
+    return parseVersionFromFileContentsRegex(fileContent, sha, gitUrl, versionRegex)
+  }
+  if (versionExtractor) {
+    return parseVersionFromFileContentsExtractor(fileContent, sha, gitUrl, versionExtractor)
+  }
+  return parseVersionFromFileContentsJSON(fileContent, sha, gitUrl)
 }
 
 export {

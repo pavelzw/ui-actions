@@ -56,8 +56,13 @@ const core = process.env.MOCKING ? coreMocked : coreDefault
 /// --- MAIN ---
 
 // deal with inputs of the github action
-const packageJsonFile = normalize(core.getInput('file', { required: false }) || 'package.json')
+const versionFile = normalize(core.getInput('file', { required: false }) || 'package.json')
 const token = core.getInput('token', { required: true }) as string
+const versionExtractor = core.getInput('extractor', { required: false }) || undefined
+const versionRegex = core.getInput('regex', { required: false }) || undefined
+if (versionExtractor && versionRegex) {
+  core.setFailed('only one of "extractor" or "regex" can be specified')
+}
 
 async function run(): Promise<VersionMetadataResponse> {
   // octokit is the GitHub API client
@@ -121,16 +126,16 @@ async function run(): Promise<VersionMetadataResponse> {
   })
   core.endGroup()
 
-  // all versions of the package.json file in between the base and head commits
+  // all versions of the version file in between the base and head commits
   // this has a lot of duplicates, as the file doesn't necessarily change in each commit
-  const maybeAllIterationsOfPackageJson = await Promise.all(
+  const maybeAllIterationsOfVersionFile = await Promise.all(
     commits.map((commit) =>
       octokit.rest.repos
-        .getContent({ owner: context.repo.owner, repo: context.repo.repo, path: packageJsonFile, ref: commit.sha })
+        .getContent({ owner: context.repo.owner, repo: context.repo.repo, path: versionFile, ref: commit.sha })
         .then((response) => ({ sha: commit.sha, response, isFallback: false }))
         .catch((error) => {
           core.warning(
-            `could not retrieve package.json file from commit ${commit.sha}: ${error.message}; falling back to 0.0.0 for this commit`
+            `could not retrieve version file from commit ${commit.sha}: ${error.message}; falling back to 0.0.0 for this commit`
           )
 
           // insert a dummy response with a version of 0.0.0 so that we can still continue
@@ -142,15 +147,15 @@ async function run(): Promise<VersionMetadataResponse> {
     )
   )
 
-  core.debug('all iterations of package.json:')
-  maybeAllIterationsOfPackageJson.forEach((iteration) => {
+  core.debug('all iterations of the version file:')
+  maybeAllIterationsOfVersionFile.forEach((iteration) => {
     core.debug(`- ${iteration.sha}: ${JSON.stringify(iteration.response)}${iteration.isFallback ? ' (fallback)' : ''}`)
   })
 
-  const failedRequests = maybeAllIterationsOfPackageJson.filter(({ response }) => response.status !== 200)
+  const failedRequests = maybeAllIterationsOfVersionFile.filter(({ response }) => response.status !== 200)
   if (failedRequests.length > 0) {
     const failedSHAs = failedRequests.map(({ sha }) => sha).join(', ')
-    throw new Error(`could not retrieve all versions of "${packageJsonFile}" (${failedSHAs}), aborting`)
+    throw new Error(`could not retrieve all versions of "${versionFile}" (${failedSHAs}), aborting`)
   }
 
   type NarrowedGetContentResponse = {
@@ -168,26 +173,26 @@ async function run(): Promise<VersionMetadataResponse> {
   }
 
   // can now assert that all requests were successful, as the status code is 200
-  const allIterationsOfPackageJson = maybeAllIterationsOfPackageJson.map(({ response, sha, isFallback }) => ({
+  const allIterationsOfVersionFile = maybeAllIterationsOfVersionFile.map(({ response, sha, isFallback }) => ({
     ...response.data,
     sha,
     isFallback
   })) as NarrowedGetContentResponse[]
 
-  // remove duplicates from `allIterationsOfPackageJson`
-  const deduplicatedVersionsOfPackageJson = allIterationsOfPackageJson.reduce(
+  // remove duplicates from `allIterationsOfVersionFile`
+  const deduplicatedVersionsOfVersionFile = allIterationsOfVersionFile.reduce(
     deduplicateConsecutive((x) => x.content),
     { list: [], last: undefined }
   ).list
 
-  // parse the contents of all the package.json files and map { version, sha } each time
-  const allVersionsOfPackageJson = deduplicatedVersionsOfPackageJson.map(
+  // parse the contents of all the version files and map { version, sha } each time
+  const allVersionsOfVersionFile = deduplicatedVersionsOfVersionFile.map(
     ({ content, sha, git_url: gitUrl, isFallback }) => {
       if (!content) throw new Error(`content is undefined, this should not happen (url: ${gitUrl}, sha: ${sha})`)
 
       const fileContent = Buffer.from(content, 'base64').toString()
 
-      const maybeVersion = parseVersionFromFileContents(fileContent, sha, gitUrl)
+      const maybeVersion = parseVersionFromFileContents(fileContent, sha, gitUrl, versionRegex, versionExtractor)
       if (!maybeVersion.success) {
         throw new Error(maybeVersion.error)
       }
@@ -196,12 +201,12 @@ async function run(): Promise<VersionMetadataResponse> {
     }
   )
 
-  const deduplicatedVersions = allVersionsOfPackageJson.reduce(
+  const deduplicatedVersions = allVersionsOfVersionFile.reduce(
     deduplicateConsecutive((x) => x.version),
     { list: [], last: undefined }
   ).list
 
-  core.startGroup('all versions of package.json')
+  core.startGroup('all versions of the version file')
   deduplicatedVersions.forEach(({ sha, version }) => {
     core.info(`- ${sha}: ${version}`)
   })

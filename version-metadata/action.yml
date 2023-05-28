@@ -4,9 +4,17 @@ description: An action that allows you to check whether your npm package version
 
 inputs:
   file:
-    description: The path to the package.json file
+    description: The path to the file containing the version number
     required: false
     default: package.json
+  extractor:
+    description: >-
+      Path to a custom executable that extracts the version number from stdin.
+      If this is set, the contents of the 'file' will be piped into the executable's stdin.
+    required: false
+  regex:
+    description: A regular expression that matches the version number in the file.
+    required: false
   token:
     description: GitHub token used for authentication (you can use secrets.GITHUB_TOKEN)
     required: false
@@ -22,7 +30,7 @@ outputs:
     description: New version number, current version if nothing changed
   commitResponsible:
     description: The SHA of the commit that last changed the version number
-  commitBase: 
+  commitBase:
     description: commit SHA of the base commit (previous head before pushing / merging new commits)
   commitHead:
     description: commit SHA of the head commit

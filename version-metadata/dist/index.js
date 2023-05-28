@@ -8334,6 +8334,7 @@ var coreDefault = __toESM(require_core());
 var import_github = __toESM(require_github());
 
 // src/utils.ts
+var import_child_process = require("child_process");
 var parseSemverVersion = (version) => {
   const [major, minor, maybePatch] = version.split(".");
   const [patch, preRelease] = maybePatch.includes("-") ? maybePatch.split("-") : [maybePatch, void 0];
@@ -8455,7 +8456,7 @@ var categorizeChangedFiles = (changedFiles) => {
   }
   return { all, added, modified, removed, renamed };
 };
-var parseVersionFromFileContents = (fileContent, sha, gitUrl) => {
+var parseVersionFromFileContentsJSON = (fileContent, sha, gitUrl) => {
   let parsed;
   try {
     parsed = JSON.parse(fileContent);
@@ -8472,6 +8473,45 @@ var parseVersionFromFileContents = (fileContent, sha, gitUrl) => {
     };
   }
   return { success: true, version: parsed.version };
+};
+var parseVersionFromFileContentsRegex = (fileContent, sha, gitUrl, versionRegex2) => {
+  const regex = new RegExp(versionRegex2);
+  const match = fileContent.match(regex);
+  if (!match) {
+    return {
+      success: false,
+      error: `Failed to extract version from file contents (url: ${gitUrl}, sha: ${sha}, content: "${fileContent}")`
+    };
+  }
+  return { success: true, version: match[0] };
+};
+var parseVersionFromFileContentsExtractor = (fileContent, sha, gitUrl, versionExtractor2) => {
+  const child = (0, import_child_process.spawnSync)(versionExtractor2, [], {
+    input: fileContent,
+    encoding: "utf-8"
+  });
+  if (child.error) {
+    return {
+      success: false,
+      error: `Failed to execute version extractor (url: ${gitUrl}, sha: ${sha}, error: ${child.error})`
+    };
+  }
+  if (child.status !== 0) {
+    return {
+      success: false,
+      error: `Version extractor exited with non-zero status code (url: ${gitUrl}, sha: ${sha}, status: ${child.status}, stderr: ${child.stderr})`
+    };
+  }
+  return { success: true, version: child.stdout.trim() };
+};
+var parseVersionFromFileContents = (fileContent, sha, gitUrl, versionRegex2, versionExtractor2) => {
+  if (versionRegex2) {
+    return parseVersionFromFileContentsRegex(fileContent, sha, gitUrl, versionRegex2);
+  }
+  if (versionExtractor2) {
+    return parseVersionFromFileContentsExtractor(fileContent, sha, gitUrl, versionExtractor2);
+  }
+  return parseVersionFromFileContentsJSON(fileContent, sha, gitUrl);
 };
 
 // src/index.ts
@@ -8511,8 +8551,13 @@ var coreMocked = {
   endGroup: () => console.groupEnd()
 };
 var core = process.env.MOCKING ? coreMocked : coreDefault;
-var packageJsonFile = (0, import_path.normalize)(core.getInput("file", { required: false }) || "package.json");
+var versionFile = (0, import_path.normalize)(core.getInput("file", { required: false }) || "package.json");
 var token = core.getInput("token", { required: true });
+var versionExtractor = core.getInput("extractor", { required: false }) || void 0;
+var versionRegex = core.getInput("regex", { required: false }) || void 0;
+if (versionExtractor && versionRegex) {
+  core.setFailed('only one of "extractor" or "regex" can be specified');
+}
 async function run() {
   const octokit = (0, import_github.getOctokit)(token);
   const { base, head } = determineBaseAndHead(import_github.context);
@@ -8546,11 +8591,11 @@ async function run() {
     core.info(`- ${commit.sha}: ${commit.commit.message.split("\n")[0].trim()}`);
   });
   core.endGroup();
-  const maybeAllIterationsOfPackageJson = await Promise.all(
+  const maybeAllIterationsOfVersionFile = await Promise.all(
     commits.map(
-      (commit) => octokit.rest.repos.getContent({ owner: import_github.context.repo.owner, repo: import_github.context.repo.repo, path: packageJsonFile, ref: commit.sha }).then((response) => ({ sha: commit.sha, response, isFallback: false })).catch((error) => {
+      (commit) => octokit.rest.repos.getContent({ owner: import_github.context.repo.owner, repo: import_github.context.repo.repo, path: versionFile, ref: commit.sha }).then((response) => ({ sha: commit.sha, response, isFallback: false })).catch((error) => {
         core.warning(
-          `could not retrieve package.json file from commit ${commit.sha}: ${error.message}; falling back to 0.0.0 for this commit`
+          `could not retrieve version file from commit ${commit.sha}: ${error.message}; falling back to 0.0.0 for this commit`
         );
         const fallbackBase64 = Buffer.from(`{ "version": "0.0.0", "fallback_for_commit": "${commit.sha}" }`).toString(
           "base64"
@@ -8559,41 +8604,41 @@ async function run() {
       })
     )
   );
-  core.debug("all iterations of package.json:");
-  maybeAllIterationsOfPackageJson.forEach((iteration) => {
+  core.debug("all iterations of the version file:");
+  maybeAllIterationsOfVersionFile.forEach((iteration) => {
     core.debug(`- ${iteration.sha}: ${JSON.stringify(iteration.response)}${iteration.isFallback ? " (fallback)" : ""}`);
   });
-  const failedRequests = maybeAllIterationsOfPackageJson.filter(({ response }) => response.status !== 200);
+  const failedRequests = maybeAllIterationsOfVersionFile.filter(({ response }) => response.status !== 200);
   if (failedRequests.length > 0) {
     const failedSHAs = failedRequests.map(({ sha }) => sha).join(", ");
-    throw new Error(`could not retrieve all versions of "${packageJsonFile}" (${failedSHAs}), aborting`);
+    throw new Error(`could not retrieve all versions of "${versionFile}" (${failedSHAs}), aborting`);
   }
-  const allIterationsOfPackageJson = maybeAllIterationsOfPackageJson.map(({ response, sha, isFallback }) => ({
+  const allIterationsOfVersionFile = maybeAllIterationsOfVersionFile.map(({ response, sha, isFallback }) => ({
     ...response.data,
     sha,
     isFallback
   }));
-  const deduplicatedVersionsOfPackageJson = allIterationsOfPackageJson.reduce(
+  const deduplicatedVersionsOfVersionFile = allIterationsOfVersionFile.reduce(
     deduplicateConsecutive((x) => x.content),
     { list: [], last: void 0 }
   ).list;
-  const allVersionsOfPackageJson = deduplicatedVersionsOfPackageJson.map(
+  const allVersionsOfVersionFile = deduplicatedVersionsOfVersionFile.map(
     ({ content, sha, git_url: gitUrl, isFallback }) => {
       if (!content)
         throw new Error(`content is undefined, this should not happen (url: ${gitUrl}, sha: ${sha})`);
       const fileContent = Buffer.from(content, "base64").toString();
-      const maybeVersion = parseVersionFromFileContents(fileContent, sha, gitUrl);
+      const maybeVersion = parseVersionFromFileContents(fileContent, sha, gitUrl, versionRegex, versionExtractor);
       if (!maybeVersion.success) {
         throw new Error(maybeVersion.error);
       }
       return { version: maybeVersion.version, sha, isFallback };
     }
   );
-  const deduplicatedVersions = allVersionsOfPackageJson.reduce(
+  const deduplicatedVersions = allVersionsOfVersionFile.reduce(
     deduplicateConsecutive((x) => x.version),
     { list: [], last: void 0 }
   ).list;
-  core.startGroup("all versions of package.json");
+  core.startGroup("all versions of the version file");
   deduplicatedVersions.forEach(({ sha, version }) => {
     core.info(`- ${sha}: ${version}`);
   });
